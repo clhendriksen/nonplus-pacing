@@ -361,11 +361,15 @@ export default function PacePlanner() {
   const data = useMemo<RowData[]>(() => {
     let cumulative = 0;
     const rows: RowData[] = [];
-    const rawSplits = milesArray.map((mileVal) => {
-      const priorMark = rows.length === 0 ? 0 : rows[rows.length - 1]?.mile ?? 0;
-      const distance = rows.length === 0 ? mileVal : mileVal - priorMark;
-      const secPerMile = paceWithAdj(baseSecPerMile, mileVal, segmentDefs);      return secPerMile * distance;
-    });
+    let previousMark = 0;
+
+const rawSplits = milesArray.map((mileVal) => {
+  const distance = mileVal - previousMark;
+  previousMark = mileVal;
+
+  const secPerMile = paceWithAdj(baseSecPerMile, mileVal, segmentDefs);
+  return secPerMile * distance;
+});
 
     const totalRaw = rawSplits.reduce((a, b) => a + b, 0);
     const targetTotal = mode === "time" ? hhmmssToSeconds(goalTime) : totalRaw;
