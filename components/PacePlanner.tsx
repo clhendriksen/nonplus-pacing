@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Download, RefreshCcw, Clock, MapPinned, Footprints, Route } from "lucide-react";
+import { Download, RefreshCcw, Clock, MapPinned, Footprints, Route, Link2, Check } from "lucide-react";
 import {
   CartesianGrid,
   Line,
@@ -478,6 +478,7 @@ export default function PacePlanner() {
   const [enableWalkBreaks, setEnableWalkBreaks] = useState(false);
   const [walkPace, setWalkPace] = useState("13:30");
   const [walkEveryMiles, setWalkEveryMiles] = useState("3");
+  const [copiedShareLink, setCopiedShareLink] = useState(false);
 
   const milesArray = useMemo(() => makeMilesArray(course.distanceMiles), [course.distanceMiles]);
 
@@ -666,6 +667,94 @@ export default function PacePlanner() {
     () => secondsToMS(planner.actualElapsedSec / course.distanceMiles),
     [planner.actualElapsedSec, course.distanceMiles]
   );
+
+const shareUrl = useMemo(() => {
+  const params = new URLSearchParams();
+
+  params.set("race", courseSlug);
+  if (courseSlug === "custom") params.set("distance", formatDistanceMiles(customDistanceMiles));
+
+  params.set("mode", mode);
+  params.set("units", unitsMiles ? "mi" : "km");
+  params.set("pace", goalPace);
+  params.set("time", goalTime);
+  params.set("start", startTime);
+  params.set("gel", String(gelEveryMin));
+  params.set("water", String(waterEveryMin));
+
+  if (crewMilesStr.trim()) {
+    params.set("crew", crewMilesStr.replace(/\s+/g, ""));
+  }
+
+  if (enableWalkBreaks) {
+    params.set("walk", "1");
+    params.set("walkPace", walkPace);
+    params.set("walkEvery", walkEveryMiles);
+  }
+
+  if (typeof window === "undefined") return "?" + params.toString();
+  return window.location.origin + window.location.pathname + "?" + params.toString();
+}, [
+  courseSlug,
+  customDistanceMiles,
+  mode,
+  unitsMiles,
+  goalPace,
+  goalTime,
+  startTime,
+  gelEveryMin,
+  waterEveryMin,
+  crewMilesStr,
+  enableWalkBreaks,
+  walkPace,
+  walkEveryMiles,
+]);
+
+useEffect(() => {
+  if (typeof window === "undefined") return;
+
+  const params = new URLSearchParams(window.location.search);
+  if (!params.toString()) return;
+
+  const race = params.get("race");
+  const distance = params.get("distance");
+  const modeParam = params.get("mode");
+  const unitsParam = params.get("units");
+  const paceParam = params.get("pace");
+  const timeParam = params.get("time");
+  const startParam = params.get("start");
+  const gelParam = params.get("gel");
+  const waterParam = params.get("water");
+  const crewParam = params.get("crew");
+  const walkParam = params.get("walk");
+  const walkPaceParam = params.get("walkPace");
+  const walkEveryParam = params.get("walkEvery");
+
+  if (race && (race in COURSE_MAP || race === "custom")) {
+    setCourseSlug(race);
+  }
+
+  if (distance) {
+    const parsed = Number(distance);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      setCustomDistance(String(parsed));
+    }
+  }
+
+  if (modeParam === "pace" || modeParam === "time") setMode(modeParam);
+  if (unitsParam === "mi" || unitsParam === "km") setUnitsMiles(unitsParam === "mi");
+  if (paceParam) setGoalPace(paceParam);
+  if (timeParam) setGoalTime(timeParam);
+  if (startParam) setStartTime(startParam);
+
+  if (gelParam) setGelEveryMin(Number(gelParam));
+  if (waterParam) setWaterEveryMin(Number(waterParam));
+  if (crewParam) setCrewMilesStr(crewParam);
+
+  if (walkParam) setEnableWalkBreaks(true);
+  if (walkPaceParam) setWalkPace(walkPaceParam);
+  if (walkEveryParam) setWalkEveryMiles(walkEveryParam);
+}, []);
 
   function resetForCourse(nextCourse: CourseDef) {
     setGoalPace(nextCourse.defaultGoalPace);
@@ -936,11 +1025,29 @@ export default function PacePlanner() {
             </div>
 
             <div className="flex flex-wrap items-end gap-3">
-              <Button onClick={exportCSV} className="gap-2"><Download className="h-4 w-4" /> Export CSV</Button>
-              <Button variant="secondary" onClick={() => resetForCourse(course)} className="gap-2"><RefreshCcw className="h-4 w-4" /> Reset</Button>
-            </div>
-          </CardContent>
-        </Card>
+  <Button onClick={exportCSV} className="gap-2">
+    <Download className="h-4 w-4" /> Export CSV
+  </Button>
+
+async function copyShareUrl() {
+  try {
+    await navigator.clipboard.writeText(shareUrl);
+    setCopiedShareLink(true);
+    setTimeout(() => setCopiedShareLink(false), 2000);
+  } catch {
+    setCopiedShareLink(false);
+  }
+}
+
+  <Button variant="secondary" onClick={copyShareUrl} className="gap-2">
+    {copiedShareLink ? <Check className="h-4 w-4" /> : <Link2 className="h-4 w-4" />}
+    {copiedShareLink ? "Copied link" : "Copy share link"}
+  </Button>
+
+  <Button variant="secondary" onClick={() => resetForCourse(course)} className="gap-2">
+    <RefreshCcw className="h-4 w-4" /> Reset
+  </Button>
+</div>
 
         <Card className="shadow-sm">
           <CardContent className="p-6">
