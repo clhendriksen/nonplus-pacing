@@ -797,6 +797,16 @@ useEffect(() => {
     downloadCSV(`${course.slug}-pace-chart.csv`, [header, ...rows]);
   }
 
+  async function copyShareUrl() {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopiedShareLink(true);
+      setTimeout(() => setCopiedShareLink(false), 2000);
+    } catch {
+      setCopiedShareLink(false);
+    }
+  }
+
   return (
     <div className="w-full min-h-screen bg-gray-50 p-4 md:p-6">
       <div className="mx-auto grid max-w-7xl gap-6">
@@ -1028,16 +1038,6 @@ useEffect(() => {
   <Button onClick={exportCSV} className="gap-2">
     <Download className="h-4 w-4" /> Export CSV
   </Button>
-
-async function copyShareUrl() {
-  try {
-    await navigator.clipboard.writeText(shareUrl);
-    setCopiedShareLink(true);
-    setTimeout(() => setCopiedShareLink(false), 2000);
-  } catch {
-    setCopiedShareLink(false);
-  }
-}
 
   <Button variant="secondary" onClick={copyShareUrl} className="gap-2">
     {copiedShareLink ? <Check className="h-4 w-4" /> : <Link2 className="h-4 w-4" />}
