@@ -1048,6 +1048,8 @@ useEffect(() => {
     <RefreshCcw className="h-4 w-4" /> Reset
   </Button>
 </div>
+          </CardContent>
+        </Card>
 
         <Card className="shadow-sm">
           <CardContent className="p-6">
