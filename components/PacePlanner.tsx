@@ -280,7 +280,7 @@ function createGenericCourse(slug: string, name: string, distanceMiles: number, 
 
 function toCSV(rows: Array<Array<string | number>>) {
   const processVal = (v: string | number) => `"${String(v).replaceAll('"', '""')}"`;
-  return rows.map((r) => r.map(processVal).join(",")).join("\\n");
+  return rows.map((r) => r.map(processVal).join(",")).join("\n");
 }
 
 function downloadCSV(filename: string, rows: Array<Array<string | number>>) {
@@ -509,10 +509,10 @@ export default function PacePlanner() {
   const planner = useMemo<PlannerComputation>(() => {
     const rows: RowData[] = [];
     const rawBaselineSplits: number[] = [];
-    const rawActualSplits: number[] = [];
+    const rawRunSplits: number[] = [];
+    const rawWalkSplits: number[] = [];
     const walkNotes: string[] = [];
     let previousMark = 0;
-    let addedWalkTimeSec = 0;
     let totalWalkDistance = 0;
 
     const walkPaceSecPerMile = hhmmssToSeconds(walkPace);
@@ -527,7 +527,8 @@ export default function PacePlanner() {
       const baselineSplit = runPaceSecPerMile * distance;
       rawBaselineSplits.push(baselineSplit);
 
-      let splitSec = baselineSplit;
+      let runSplitSec = baselineSplit;
+      let walkSplitSec = 0;
       let walkNote = "";
 
       if (enableWalkBreaks && distance > 0) {
@@ -542,8 +543,8 @@ export default function PacePlanner() {
           );
           const runDistance = Math.max(0, distance - walkDistance);
 
-          splitSec = runPaceSecPerMile * runDistance + walkPaceSecPerMile * walkDistance;
-          addedWalkTimeSec += splitSec - baselineSplit;
+          runSplitSec = runPaceSecPerMile * runDistance;
+          walkSplitSec = walkPaceSecPerMile * walkDistance;
           totalWalkDistance += walkDistance;
           walkNote = overlappingWindows
             .map((window) => `Walk ${formatCourseMark(window.start)}–${formatCourseMark(window.end)}`)
@@ -551,14 +552,24 @@ export default function PacePlanner() {
         }
       }
 
-      rawActualSplits.push(splitSec);
+      rawRunSplits.push(runSplitSec);
+      rawWalkSplits.push(walkSplitSec);
       walkNotes.push(walkNote);
     }
 
     const totalRawBaseline = rawBaselineSplits.reduce((a, b) => a + b, 0);
-    const totalRawActual = rawActualSplits.reduce((a, b) => a + b, 0);
-    const targetTotal = mode === "time" ? hhmmssToSeconds(goalTime) : totalRawBaseline;
-    const scale = totalRawBaseline > 0 ? targetTotal / totalRawBaseline : 1;
+    const totalRawRunSum = rawRunSplits.reduce((a, b) => a + b, 0);
+    const totalWalkTimeSec = rawWalkSplits.reduce((a, b) => a + b, 0);
+
+    // In time mode: keep walk pace fixed and only scale the run portions to hit the goal time.
+    // In pace mode: run pace is taken as-is (scale = 1).
+    let runScale: number;
+    if (mode === "time") {
+      const goalTimeSec = hhmmssToSeconds(goalTime);
+      runScale = totalRawRunSum > 0 ? (goalTimeSec - totalWalkTimeSec) / totalRawRunSum : 1;
+    } else {
+      runScale = 1;
+    }
 
     const startDt = timeStringToDate(startTime);
     const gelInt = Math.max(0, gelEveryMin) * 60;
@@ -572,7 +583,7 @@ export default function PacePlanner() {
       const distance = mileVal - previousMile;
       previousMile = mileVal;
 
-      const splitSec = rawActualSplits[idx] * scale;
+      const splitSec = rawRunSplits[idx] * runScale + rawWalkSplits[idx];
       cumulative += splitSec;
 
       let gel: "" | "Gel" = "";
@@ -608,13 +619,17 @@ export default function PacePlanner() {
       });
     });
 
+    const actualElapsedSec = totalRawRunSum * runScale + totalWalkTimeSec;
+    const baselineElapsedSec = totalRawBaseline * runScale;
+    const addedWalkTimeSec = actualElapsedSec - baselineElapsedSec;
+
     return {
       rows,
-      addedWalkTimeSec: addedWalkTimeSec * scale,
+      addedWalkTimeSec,
       totalWalkDistance,
       walkBreakCount: walkWindows.length,
-      actualElapsedSec: totalRawActual * scale,
-      baselineElapsedSec: totalRawBaseline * scale,
+      actualElapsedSec,
+      baselineElapsedSec,
     };
   }, [
     milesArray,
