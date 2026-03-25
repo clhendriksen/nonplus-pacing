@@ -7,8 +7,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Download, RefreshCcw, Clock, MapPinned } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Download, RefreshCcw, Clock, MapPinned, Footprints, Route } from "lucide-react";
 import {
   CartesianGrid,
   Line,
@@ -20,8 +26,6 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-
-type PlannerMode = "pace" | "time";
 
 type SegmentDef = {
   name: string;
@@ -48,6 +52,8 @@ type CourseDef = {
   note?: string;
 };
 
+type PlannerMode = "pace" | "time";
+
 type SegmentAdjustment = {
   name: string;
   pct: number;
@@ -66,6 +72,7 @@ type RowData = {
   water: "" | "Water";
   crew: "" | "Crew";
   mat: "" | "Mat";
+  walk: string;
   yPaceSec: number;
 };
 
@@ -74,6 +81,23 @@ type ChartPoint = {
   paceSec: number;
   elev: number;
 };
+
+type PlannerComputation = {
+  rows: RowData[];
+  addedWalkTimeSec: number;
+  totalWalkDistance: number;
+  walkBreakCount: number;
+  actualElapsedSec: number;
+  baselineElapsedSec: number;
+};
+
+type WalkWindow = {
+  start: number;
+  end: number;
+};
+
+const WALK_BREAK_DISTANCE = 0.25;
+const KM_PER_MILE = 1.609344;
 
 function pad(n: number, width = 2) {
   const s = String(n);
@@ -112,6 +136,18 @@ function secondsToMS(total: number) {
   return `${neg ? "-" : ""}${m}:${pad(s)}`;
 }
 
+function formatDistanceMiles(distance: number) {
+  return distance.toFixed(2).replace(/\.00$/, "");
+}
+
+function formatDistanceKm(distanceMiles: number) {
+  return (distanceMiles * KM_PER_MILE).toFixed(2).replace(/\.00$/, "");
+}
+
+function formatCourseMark(distance: number) {
+  return distance.toFixed(2);
+}
+
 function timeStringToDate(timeStr: string) {
   const now = new Date();
   const [hh, mm] = timeStr.split(":").map(Number);
@@ -140,7 +176,7 @@ function makeMilesArray(distanceMiles: number) {
   return arr;
 }
 
-function interpElevation(keys: ElevationKey[], mile: number) {
+function interpElevation(keys: CourseDef["elevationKeys"], mile: number) {
   if (keys.length === 0) return 0;
   for (let i = 0; i < keys.length - 1; i++) {
     const a = keys[i];
@@ -165,9 +201,86 @@ function paceWithAdj(
   return baseSecPerMile * (1 + adjPct / 100);
 }
 
+function parseMilesInput(value: string, maxDistance: number) {
+  return value
+    .split(/[^0-9.]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map(Number)
+    .filter((n) => !Number.isNaN(n) && n > 0 && n <= maxDistance);
+}
+
+function within(x: number, y: number, tolerance = 0.05) {
+  return Math.abs(x - y) <= tolerance;
+}
+
+function getOverlap(startA: number, endA: number, startB: number, endB: number) {
+  return Math.max(0, Math.min(endA, endB) - Math.max(startA, startB));
+}
+
+function buildWalkWindows(distanceMiles: number, everyMiles: number) {
+  if (!Number.isFinite(everyMiles) || everyMiles <= 0) return [] as WalkWindow[];
+
+  const windows: WalkWindow[] = [];
+  for (let start = everyMiles; start < distanceMiles; start += everyMiles) {
+    const end = Math.min(distanceMiles, start + WALK_BREAK_DISTANCE);
+    if (end > start) windows.push({ start, end });
+  }
+  return windows;
+}
+
+function buildTimingMats(distanceMiles: number) {
+  const mats: number[] = [];
+  for (let km = 5; km / KM_PER_MILE < distanceMiles - 0.05; km += 5) {
+    mats.push(Number((km / KM_PER_MILE).toFixed(1)));
+  }
+  return mats;
+}
+
+function buildDefaultCrewMiles(distanceMiles: number) {
+  const candidates = [distanceMiles * 0.3, distanceMiles * 0.6, distanceMiles * 0.85]
+    .map((v) => Number(v.toFixed(1)))
+    .filter((v, idx, arr) => v > 0 && v < distanceMiles && arr.indexOf(v) === idx);
+  return candidates;
+}
+
+function createGenericCourse(slug: string, name: string, distanceMiles: number, note?: string): CourseDef {
+  const safeDistance = Math.max(0.25, Number.isFinite(distanceMiles) ? distanceMiles : 13.1);
+  const third = safeDistance / 3;
+  const twoThirds = (2 * safeDistance) / 3;
+  return {
+    slug,
+    name,
+    distanceMiles: safeDistance,
+    defaultStartTime: "08:00",
+    defaultGoalPace: "9:00",
+    defaultCrewMiles: buildDefaultCrewMiles(safeDistance),
+    timingMats: buildTimingMats(safeDistance),
+    segments: [
+      { name: "Opening", startMile: 0, endMile: Number(third.toFixed(2)) },
+      {
+        name: "Middle",
+        startMile: Number(third.toFixed(2)),
+        endMile: Number(twoThirds.toFixed(2)),
+      },
+      {
+        name: "Closing",
+        startMile: Number(twoThirds.toFixed(2)),
+        endMile: Number(safeDistance.toFixed(2)),
+      },
+    ],
+    elevationKeys: [
+      { mile: 0, elev: 0 },
+      { mile: Number((safeDistance / 2).toFixed(2)), elev: 0 },
+      { mile: Number(safeDistance.toFixed(2)), elev: 0 },
+    ],
+    note: note ?? "Generic distance mode for quick pacing experiments.",
+  };
+}
+
 function toCSV(rows: Array<Array<string | number>>) {
   const processVal = (v: string | number) => `"${String(v).replaceAll('"', '""')}"`;
-  return rows.map((r) => r.map(processVal).join(",")).join("\n");
+  return rows.map((r) => r.map(processVal).join(",")).join("\\n");
 }
 
 function downloadCSV(filename: string, rows: Array<Array<string | number>>) {
@@ -182,7 +295,14 @@ function downloadCSV(filename: string, rows: Array<Array<string | number>>) {
   document.body.removeChild(link);
 }
 
-const COURSES: CourseDef[] = [
+function defaultSegmentAdjustments(course: CourseDef) {
+  return course.segments.map((segment) => ({
+    name: segment.name,
+    pct: segment.defaultAdjPct ?? 0,
+  }));
+}
+
+const BUILTIN_COURSES: CourseDef[] = [
   {
     slug: "nyc",
     name: "New York City Marathon",
@@ -310,45 +430,73 @@ const COURSES: CourseDef[] = [
     ],
     note: "Net downhill, but the Newton Hills punish bad pacing.",
   },
+  createGenericCourse(
+    "half",
+    "Generic Half Marathon",
+    13.1,
+    "Generic half marathon mode for quick testing and pacing.",
+  ),
+  createGenericCourse("custom", "Custom Distance", 10, "Set any distance and use a generic flat profile."),
 ];
 
-const COURSE_MAP = Object.fromEntries(COURSES.map((course) => [course.slug, course])) as Record<string, CourseDef>;
+const COURSE_MAP: Record<string, CourseDef> = Object.fromEntries(
+  BUILTIN_COURSES.map((course) => [course.slug, course])
+);
 
-function defaultSegmentAdjustments(course: CourseDef) {
-  return course.segments.map((segment) => ({
-    name: segment.name,
-    pct: segment.defaultAdjPct ?? 0,
-  }));
-}
+const INITIAL_COURSE = COURSE_MAP.nyc;
 
 export default function PacePlanner() {
   const [courseSlug, setCourseSlug] = useState<string>("nyc");
-  const course = COURSE_MAP[courseSlug];
+  const [customDistance, setCustomDistance] = useState("13.1");
+
+  const customDistanceMiles = useMemo(() => {
+    const parsed = Number(customDistance);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 13.1;
+  }, [customDistance]);
+
+  const course = useMemo(() => {
+    if (courseSlug === "custom") {
+      return createGenericCourse(
+        "custom",
+        `Custom ${formatDistanceMiles(customDistanceMiles)} mi`,
+        customDistanceMiles,
+        "Generic flat profile for any custom race distance."
+      );
+    }
+    return COURSE_MAP[courseSlug] ?? INITIAL_COURSE;
+  }, [courseSlug, customDistanceMiles]);
 
   const [mode, setMode] = useState<PlannerMode>("pace");
   const [unitsMiles, setUnitsMiles] = useState(true);
-  const [goalPace, setGoalPace] = useState(course.defaultGoalPace);
+  const [goalPace, setGoalPace] = useState(INITIAL_COURSE.defaultGoalPace);
   const [goalTime, setGoalTime] = useState("3:56:00");
-  const [startTime, setStartTime] = useState(course.defaultStartTime);
+  const [startTime, setStartTime] = useState(INITIAL_COURSE.defaultStartTime);
   const [gelEveryMin, setGelEveryMin] = useState(45);
   const [waterEveryMin, setWaterEveryMin] = useState(30);
-  const [segAdj, setSegAdj] = useState<SegmentAdjustment[]>(defaultSegmentAdjustments(course));
-  const [crewMilesStr, setCrewMilesStr] = useState(course.defaultCrewMiles.join(","));
+  const [segAdj, setSegAdj] = useState<SegmentAdjustment[]>(defaultSegmentAdjustments(INITIAL_COURSE));
+  const [crewMilesStr, setCrewMilesStr] = useState(INITIAL_COURSE.defaultCrewMiles.join(","));
+  const [enableWalkBreaks, setEnableWalkBreaks] = useState(false);
+  const [walkPace, setWalkPace] = useState("13:30");
+  const [walkEveryMiles, setWalkEveryMiles] = useState("3");
 
   const milesArray = useMemo(() => makeMilesArray(course.distanceMiles), [course.distanceMiles]);
 
   const crewMiles = useMemo(
-    () =>
-      crewMilesStr
-        .split(/[^0-9.]+/)
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map(Number)
-        .filter((n) => !Number.isNaN(n) && n > 0 && n <= course.distanceMiles),
+    () => parseMilesInput(crewMilesStr, course.distanceMiles),
     [crewMilesStr, course.distanceMiles]
   );
 
-  const segmentDefs = useMemo(
+  const walkIntervalMiles = useMemo(() => {
+    const parsed = Number(walkEveryMiles);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }, [walkEveryMiles]);
+
+  const walkWindows = useMemo(
+    () => (enableWalkBreaks ? buildWalkWindows(course.distanceMiles, walkIntervalMiles) : []),
+    [enableWalkBreaks, course.distanceMiles, walkIntervalMiles]
+  );
+
+  const segmentDefs = useMemo<Array<SegmentDef & { pct?: number }>>(
     () => course.segments.map((seg, i) => ({ ...seg, pct: segAdj[i]?.pct || 0 })),
     [course, segAdj]
   );
@@ -358,34 +506,73 @@ export default function PacePlanner() {
     return hhmmssToSeconds(goalTime) / course.distanceMiles;
   }, [mode, goalPace, goalTime, course.distanceMiles]);
 
-  const data = useMemo<RowData[]>(() => {
-    let cumulative = 0;
+  const planner = useMemo<PlannerComputation>(() => {
     const rows: RowData[] = [];
+    const rawBaselineSplits: number[] = [];
+    const rawActualSplits: number[] = [];
+    const walkNotes: string[] = [];
     let previousMark = 0;
+    let addedWalkTimeSec = 0;
+    let totalWalkDistance = 0;
 
-const rawSplits = milesArray.map((mileVal) => {
-  const distance = mileVal - previousMark;
-  previousMark = mileVal;
+    const walkPaceSecPerMile = hhmmssToSeconds(walkPace);
 
-  const secPerMile = paceWithAdj(baseSecPerMile, mileVal, segmentDefs);
-  return secPerMile * distance;
-});
+    for (const mileVal of milesArray) {
+      const splitStart = previousMark;
+      const splitEnd = mileVal;
+      const distance = splitEnd - splitStart;
+      previousMark = mileVal;
 
-    const totalRaw = rawSplits.reduce((a, b) => a + b, 0);
-    const targetTotal = mode === "time" ? hhmmssToSeconds(goalTime) : totalRaw;
-    const scale = totalRaw > 0 ? targetTotal / totalRaw : 1;
+      const runPaceSecPerMile = paceWithAdj(baseSecPerMile, mileVal, segmentDefs);
+      const baselineSplit = runPaceSecPerMile * distance;
+      rawBaselineSplits.push(baselineSplit);
+
+      let splitSec = baselineSplit;
+      let walkNote = "";
+
+      if (enableWalkBreaks && distance > 0) {
+        const overlappingWindows = walkWindows.filter(
+          (window) => getOverlap(splitStart, splitEnd, window.start, window.end) > 0
+        );
+
+        if (overlappingWindows.length > 0) {
+          const walkDistance = overlappingWindows.reduce(
+            (sum, window) => sum + getOverlap(splitStart, splitEnd, window.start, window.end),
+            0
+          );
+          const runDistance = Math.max(0, distance - walkDistance);
+
+          splitSec = runPaceSecPerMile * runDistance + walkPaceSecPerMile * walkDistance;
+          addedWalkTimeSec += splitSec - baselineSplit;
+          totalWalkDistance += walkDistance;
+          walkNote = overlappingWindows
+            .map((window) => `Walk ${formatCourseMark(window.start)}–${formatCourseMark(window.end)}`)
+            .join(", ");
+        }
+      }
+
+      rawActualSplits.push(splitSec);
+      walkNotes.push(walkNote);
+    }
+
+    const totalRawBaseline = rawBaselineSplits.reduce((a, b) => a + b, 0);
+    const totalRawActual = rawActualSplits.reduce((a, b) => a + b, 0);
+    const targetTotal = mode === "time" ? hhmmssToSeconds(goalTime) : totalRawBaseline;
+    const scale = totalRawBaseline > 0 ? targetTotal / totalRawBaseline : 1;
 
     const startDt = timeStringToDate(startTime);
     const gelInt = Math.max(0, gelEveryMin) * 60;
     const waterInt = Math.max(0, waterEveryMin) * 60;
     let nextGelAt = gelInt || Infinity;
     let nextWaterAt = waterInt || Infinity;
+    let cumulative = 0;
     let previousMile = 0;
 
     milesArray.forEach((mileVal, idx) => {
       const distance = mileVal - previousMile;
-      const splitSec = rawSplits[idx] * scale;
       previousMile = mileVal;
+
+      const splitSec = rawActualSplits[idx] * scale;
       cumulative += splitSec;
 
       let gel: "" | "Gel" = "";
@@ -400,13 +587,13 @@ const rawSplits = milesArray.map((mileVal) => {
       }
 
       const segName = segmentDefs.find((s) => mileVal >= s.startMile && mileVal <= s.endMile)?.name;
-      const crew = crewMiles.some((m) => Math.abs(mileVal - m) <= 0.05) ? "Crew" : "";
-      const mat = course.timingMats.some((m) => Math.abs(mileVal - m) <= 0.05) ? "Mat" : "";
+      const crew = crewMiles.some((m) => within(mileVal, m)) ? "Crew" : "";
+      const mat = course.timingMats.some((m) => within(mileVal, m)) ? "Mat" : "";
 
       rows.push({
         idx,
         mile: mileVal,
-        km: mileVal * 1.609344,
+        km: mileVal * KM_PER_MILE,
         segName,
         pace: secondsToMS(splitSec / distance),
         split: secondsToHMS(splitSec),
@@ -416,21 +603,53 @@ const rawSplits = milesArray.map((mileVal) => {
         water,
         crew,
         mat,
+        walk: walkNotes[idx],
         yPaceSec: splitSec / distance,
       });
     });
 
-    return rows;
-  }, [milesArray, baseSecPerMile, segmentDefs, goalTime, mode, startTime, gelEveryMin, waterEveryMin, crewMiles, course.timingMats]);
+    return {
+      rows,
+      addedWalkTimeSec: addedWalkTimeSec * scale,
+      totalWalkDistance,
+      walkBreakCount: walkWindows.length,
+      actualElapsedSec: totalRawActual * scale,
+      baselineElapsedSec: totalRawBaseline * scale,
+    };
+  }, [
+    milesArray,
+    baseSecPerMile,
+    segmentDefs,
+    goalTime,
+    mode,
+    startTime,
+    gelEveryMin,
+    waterEveryMin,
+    crewMiles,
+    course.timingMats,
+    enableWalkBreaks,
+    walkWindows,
+    walkPace,
+  ]);
 
   const chartData = useMemo<ChartPoint[]>(
     () =>
-      data.map((d) => ({
+      planner.rows.map((d) => ({
         name: d.mile,
         paceSec: Math.round(d.yPaceSec),
         elev: Math.round(interpElevation(course.elevationKeys, d.mile)),
       })),
-    [data, course.elevationKeys]
+    [planner.rows, course.elevationKeys]
+  );
+
+  const projectedFinishClock = useMemo(
+    () => formatClock(addSeconds(timeStringToDate(startTime), planner.actualElapsedSec)),
+    [startTime, planner.actualElapsedSec]
+  );
+
+  const effectiveAvgPace = useMemo(
+    () => secondsToMS(planner.actualElapsedSec / course.distanceMiles),
+    [planner.actualElapsedSec, course.distanceMiles]
   );
 
   function resetForCourse(nextCourse: CourseDef) {
@@ -440,14 +659,27 @@ const rawSplits = milesArray.map((mileVal) => {
     setCrewMilesStr(nextCourse.defaultCrewMiles.join(","));
     setMode("pace");
     setUnitsMiles(true);
-    setGoalTime("3:56:00");
+    setGoalTime(nextCourse.distanceMiles === 13.1 ? "1:58:00" : "3:56:00");
     setGelEveryMin(45);
     setWaterEveryMin(30);
+    setEnableWalkBreaks(false);
+    setWalkPace("13:30");
+    setWalkEveryMiles("3");
   }
 
   function exportCSV() {
-    const header = ["Course", "Mile", "Kilometer", "Segment", "Pace (/mi)", "Split", "Cumulative", "On-Course Clock", "Notes"];
-    const rows = data.map((r) => [
+    const header = [
+      "Course",
+      "Mile",
+      "Kilometer",
+      "Segment",
+      "Pace (/mi)",
+      "Split",
+      "Cumulative",
+      "On-Course Clock",
+      "Notes",
+    ];
+    const rows = planner.rows.map((r) => [
       course.name,
       r.mile,
       r.km.toFixed(1),
@@ -456,7 +688,7 @@ const rawSplits = milesArray.map((mileVal) => {
       r.split,
       r.cumulative,
       r.clock,
-      [r.gel, r.water, r.crew, r.mat].filter(Boolean).join(" "),
+      [r.gel, r.water, r.crew, r.mat, r.walk].filter(Boolean).join(" "),
     ]);
     downloadCSV(`${course.slug}-pace-chart.csv`, [header, ...rows]);
   }
@@ -482,7 +714,15 @@ const rawSplits = milesArray.map((mileVal) => {
                 <Select
                   value={courseSlug}
                   onValueChange={(value) => {
-                    const nextCourse = COURSE_MAP[value];
+                    const nextCourse =
+                      value === "custom"
+                        ? createGenericCourse(
+                            "custom",
+                            `Custom ${formatDistanceMiles(customDistanceMiles)} mi`,
+                            customDistanceMiles,
+                            "Generic flat profile for any custom race distance."
+                          )
+                        : COURSE_MAP[value] ?? INITIAL_COURSE;
                     setCourseSlug(value);
                     resetForCourse(nextCourse);
                   }}
@@ -491,7 +731,7 @@ const rawSplits = milesArray.map((mileVal) => {
                     <SelectValue placeholder="Select a course" />
                   </SelectTrigger>
                   <SelectContent>
-                    {COURSES.map((entry) => (
+                    {BUILTIN_COURSES.map((entry) => (
                       <SelectItem key={entry.slug} value={entry.slug}>
                         {entry.name}
                       </SelectItem>
@@ -506,17 +746,34 @@ const rawSplits = milesArray.map((mileVal) => {
                 ) : null}
               </div>
 
+              {courseSlug === "custom" ? (
+                <div className="space-y-2">
+                  <Label>Custom distance (miles)</Label>
+                  <Input
+                    value={customDistance}
+                    onChange={(e) => setCustomDistance(e.target.value)}
+                    placeholder="e.g. 10, 13.1, 31.1"
+                  />
+                  <div className="text-xs text-gray-500">≈ {formatDistanceKm(customDistanceMiles)} km</div>
+                </div>
+              ) : (
+                <div className="rounded-2xl border bg-white p-4">
+                  <div className="text-xs text-gray-500">Distance</div>
+                  <div className="mt-1 text-xl font-semibold tabular-nums">{formatDistanceMiles(course.distanceMiles)} mi</div>
+                  <div className="mt-1 text-xs text-gray-500">≈ {formatDistanceKm(course.distanceMiles)} km</div>
+                </div>
+              )}
+
               <div className="space-y-2">
                 <Label className="text-sm">Mode</Label>
                 <div className="flex items-center gap-2">
-                  <Button variant={mode === "pace" ? "default" : "secondary"} onClick={() => setMode("pace")}>Goal Pace</Button>
-                  <Button variant={mode === "time" ? "default" : "secondary"} onClick={() => setMode("time")}>Goal Time</Button>
+                  <Button variant={mode === "pace" ? "default" : "secondary"} onClick={() => setMode("pace")}>
+                    Goal Pace
+                  </Button>
+                  <Button variant={mode === "time" ? "default" : "secondary"} onClick={() => setMode("time")}>
+                    Goal Time
+                  </Button>
                 </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Start Time (24h, local)</Label>
-                <Input value={startTime} onChange={(e) => setStartTime(e.target.value)} placeholder="HH:MM" />
               </div>
             </div>
 
@@ -525,13 +782,13 @@ const rawSplits = milesArray.map((mileVal) => {
                 <div className="space-y-2">
                   <Label>Goal Pace ({unitsMiles ? "/mile" : "/km"})</Label>
                   <Input
-                    value={unitsMiles ? goalPace : secondsToMS(Math.round(hhmmssToSeconds(goalPace) / 1.609344))}
+                    value={unitsMiles ? goalPace : secondsToMS(Math.round(hhmmssToSeconds(goalPace) / KM_PER_MILE))}
                     onChange={(e) => {
                       if (unitsMiles) {
                         setGoalPace(e.target.value);
                       } else {
                         const perKm = hhmmssToSeconds(e.target.value);
-                        const perMile = perKm * 1.609344;
+                        const perMile = perKm * KM_PER_MILE;
                         const m = Math.floor(perMile / 60);
                         const s = Math.round(perMile % 60);
                         setGoalPace(`${m}:${pad(s)}`);
@@ -547,14 +804,36 @@ const rawSplits = milesArray.map((mileVal) => {
                 </div>
               )}
 
+              <div className="space-y-2">
+                <Label>Start Time (24h, local)</Label>
+                <Input value={startTime} onChange={(e) => setStartTime(e.target.value)} placeholder="HH:MM" />
+              </div>
+
               <div className="flex items-center gap-3 self-end pb-1">
                 <Switch id="units" checked={unitsMiles} onCheckedChange={setUnitsMiles} />
                 <Label htmlFor="units">Use miles (off = km)</Label>
               </div>
+            </div>
 
-              <div className="flex flex-wrap items-end gap-3">
-                <Button onClick={exportCSV} className="gap-2"><Download className="h-4 w-4" /> Export CSV</Button>
-                <Button variant="secondary" onClick={() => resetForCourse(course)} className="gap-2"><RefreshCcw className="h-4 w-4" /> Reset</Button>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-2xl border bg-white p-4">
+                <div className="text-xs text-gray-500">Projected finish</div>
+                <div className="mt-1 text-2xl font-semibold tabular-nums">{secondsToHMS(planner.actualElapsedSec)}</div>
+              </div>
+              <div className="rounded-2xl border bg-white p-4">
+                <div className="text-xs text-gray-500">Finish clock</div>
+                <div className="mt-1 text-2xl font-semibold tabular-nums">{projectedFinishClock}</div>
+              </div>
+              <div className="rounded-2xl border bg-white p-4">
+                <div className="text-xs text-gray-500">Effective avg pace</div>
+                <div className="mt-1 text-2xl font-semibold tabular-nums">{effectiveAvgPace}/mi</div>
+              </div>
+              <div className="rounded-2xl border bg-white p-4">
+                <div className="text-xs text-gray-500">No-walk finish</div>
+                <div className="mt-1 text-2xl font-semibold tabular-nums">{secondsToHMS(planner.baselineElapsedSec)}</div>
+                {enableWalkBreaks ? (
+                  <div className="mt-1 text-xs text-gray-500">+{secondsToMS(planner.addedWalkTimeSec)} slower with walks</div>
+                ) : null}
               </div>
             </div>
 
@@ -569,8 +848,49 @@ const rawSplits = milesArray.map((mileVal) => {
               </div>
               <div className="space-y-2">
                 <Label>Crew miles</Label>
-                <Input value={crewMilesStr} onChange={(e) => setCrewMilesStr(e.target.value)} placeholder="e.g. 8, 12, 14, 16" />
+                <Input value={crewMilesStr} onChange={(e) => setCrewMilesStr(e.target.value)} placeholder="e.g. 4, 8, 12" />
               </div>
+            </div>
+
+            <div className="rounded-2xl border bg-white p-4">
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
+                <div className="flex items-center gap-3 self-end pb-1">
+                  <Switch id="walk-breaks" checked={enableWalkBreaks} onCheckedChange={setEnableWalkBreaks} />
+                  <Label htmlFor="walk-breaks">Enable 0.25 mi walk breaks</Label>
+                </div>
+                <div className="space-y-2">
+                  <Label>Walk pace</Label>
+                  <Input value={walkPace} onChange={(e) => setWalkPace(e.target.value)} placeholder="mm:ss" disabled={!enableWalkBreaks} />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Walk every X miles (course distance)</Label>
+                  <Input
+                    value={walkEveryMiles}
+                    onChange={(e) => setWalkEveryMiles(e.target.value)}
+                    placeholder="e.g. 3"
+                    disabled={!enableWalkBreaks}
+                  />
+                </div>
+              </div>
+
+              {enableWalkBreaks ? (
+                <div className="mt-4 grid grid-cols-1 gap-3 rounded-xl bg-amber-50 p-4 md:grid-cols-3">
+                  <div>
+                    <div className="text-xs text-gray-500">Walk breaks</div>
+                    <div className="mt-1 flex items-center gap-2 text-sm font-medium">
+                      <Footprints className="h-4 w-4" /> {planner.walkBreakCount}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500">Total walking distance</div>
+                    <div className="mt-1 text-sm font-medium">{formatDistanceMiles(planner.totalWalkDistance)} mi</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500">Added time vs no-walk plan</div>
+                    <div className="mt-1 text-sm font-medium">+{secondsToMS(planner.addedWalkTimeSec)}</div>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <div className="space-y-3">
@@ -599,6 +919,11 @@ const rawSplits = milesArray.map((mileVal) => {
                 ))}
               </div>
             </div>
+
+            <div className="flex flex-wrap items-end gap-3">
+              <Button onClick={exportCSV} className="gap-2"><Download className="h-4 w-4" /> Export CSV</Button>
+              <Button variant="secondary" onClick={() => resetForCourse(course)} className="gap-2"><RefreshCcw className="h-4 w-4" /> Reset</Button>
+            </div>
           </CardContent>
         </Card>
 
@@ -615,7 +940,12 @@ const rawSplits = milesArray.map((mileVal) => {
                   <XAxis dataKey="name" tickFormatter={(v) => String(v)} label={{ value: "Mile", position: "insideBottomRight", offset: -5 }} />
                   <YAxis yAxisId="left" tickFormatter={(v) => secondsToMS(v)} label={{ value: "Pace (mm:ss)", angle: -90, position: "insideLeft" }} />
                   <YAxis yAxisId="right" orientation="right" label={{ value: "Elevation (ft)", angle: 90, position: "insideRight" }} />
-                  <Tooltip formatter={(value, name) => (name === "paceSec" ? secondsToMS(value as number) : `${value} ft`)} labelFormatter={(label) => `Mile ${label}`} />
+                  <Tooltip
+                    formatter={(value: number | string, name: string) =>
+                      name === "paceSec" ? secondsToMS(Number(value)) : `${value} ft`
+                    }
+                    labelFormatter={(label) => `Mile ${label}`}
+                  />
                   {course.slug === "nyc" ? <ReferenceArea x1={15} x2={16.5} label="Queensboro" /> : null}
                   {crewMiles.map((m, i) => (
                     <ReferenceLine key={`crew-${m}-${i}`} x={m} strokeDasharray="4 4" label={{ value: `Crew @${m}`, position: "top" }} />
@@ -646,19 +976,30 @@ const rawSplits = milesArray.map((mileVal) => {
                 </tr>
               </thead>
               <tbody>
-                {data.map((row) => (
-                  <tr key={row.idx} className={`border-b ${row.mat ? "bg-yellow-50" : ""}`}>
+                {planner.rows.map((row) => (
+                  <tr key={row.idx} className={`border-b ${row.mat ? "bg-yellow-50" : row.walk ? "bg-blue-50" : ""}`}>
                     <td className="px-4 py-2 tabular-nums">{unitsMiles ? row.mile : row.km.toFixed(1)}</td>
                     <td className="px-4 py-2">{row.segName}</td>
                     <td className="px-4 py-2 tabular-nums">{row.split}</td>
-                    <td className="px-4 py-2 tabular-nums">{unitsMiles ? row.pace : secondsToMS(Math.round(hhmmssToSeconds(row.pace) / 1.609344))}</td>
+                    <td className="px-4 py-2 tabular-nums">{unitsMiles ? row.pace : secondsToMS(Math.round(hhmmssToSeconds(row.pace) / KM_PER_MILE))}</td>
                     <td className="px-4 py-2 tabular-nums">{row.cumulative}</td>
                     <td className="px-4 py-2 tabular-nums">{row.clock}</td>
-                    <td className="px-4 py-2">{[row.gel, row.water, row.crew, row.mat].filter(Boolean).join(" ")}</td>
+                    <td className="px-4 py-2">{[row.gel, row.water, row.crew, row.mat, row.walk].filter(Boolean).join(" ")}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </CardContent>
+        </Card>
+
+        <Card className="shadow-sm">
+          <CardContent className="p-4 text-sm text-gray-600">
+            <div className="flex items-start gap-2">
+              <Route className="mt-0.5 h-4 w-4" />
+              <div>
+                Half marathon and custom distance modes use a generic flat profile and dynamically generated 5K timing mats. Crew spots and goal defaults can still be edited after selection.
+              </div>
+            </div>
           </CardContent>
         </Card>
       </div>
