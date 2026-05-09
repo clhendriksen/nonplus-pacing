@@ -14,7 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Download, RefreshCcw, Clock, MapPinned, Footprints, Route, Link2, Check } from "lucide-react";
+import { Download, RefreshCcw, Clock, MapPinned, Footprints, Route, Link2, Check, Mail } from "lucide-react";
 import {
   CartesianGrid,
   Line,
@@ -1165,11 +1165,24 @@ useEffect(() => {
 
         <Card className="shadow-sm">
           <CardContent className="p-4 text-sm text-gray-600">
-            <div className="flex items-start gap-2">
-              <Route className="mt-0.5 h-4 w-4" />
-              <div>
-                Half marathon and custom distance modes use a generic flat profile and dynamically generated 5K timing mats. Crew spots and goal defaults can still be edited after selection.
-              </div>
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+
+  <div className="flex items-start gap-2">
+    <Route className="mt-0.5 h-4 w-4" />
+
+    <div>
+      Half marathon and custom distance modes use a generic flat profile and dynamically generated timing mats.
+    </div>
+  </div>
+
+  <a
+    href="mailto:pace@nonplus.ai?subject=Race%20or%20Feature%20Request%20for%20Pace%20Planner&body=Hi%20Nonplus%20team%2C%0A%0AI%27d%20like%20to%20request%3A%0A%0A-%20Race%3A%20%0A-%20Feature%3A%20%0A-%20Why%20it%20would%20help%3A%20%0A%0AThanks!"
+  >
+    <Button variant="secondary" className="gap-2">
+      <Mail className="h-4 w-4" />
+      Request a race or feature
+    </Button>
+  </a>
             </div>
           </CardContent>
         </Card>
